@@ -187,6 +187,7 @@ PO↔领域↔VO 三层分离，DB 调用统一走仓储适配器的 `blocking(.
 | 巡护任务 | `/api/tasks` | `POST` 派发（编号 `PT-YYYY-NNNN` 自动生成，也可显式指定，撞号返回业务失败不甩底层错；默认待执行）、`GET /{id}` 详情、`PUT /{id}` 改任务、`POST /{id}/start` 开工、`POST /{id}/complete` 完成回报、`POST /{id}/cancel` 取消（置已取消并逻辑销账：名单翻不到、账留在表里）、`GET` 条件分页（stationId/siteId/patrolType/status/plannedDate 全空翻整份任务，每行带任务编号） |
 | 野生动物观测 | `/api/obs` | `POST` 录入（编号 `WO-YYYY-NNNNNN` 自动生成，6 位序号，撞号重试不甩底层错；任务必须正在执行、物种必须在名录且启用、个体数量必须为正数、健康状态默认 NORMAL；照名录当前保护级别抄一份快照）、`GET /{id}` 详情、`PUT /{id}` 改录（点位/物种/数量/健康状态/观测时刻/记录人，任务归属不改；换物种重抄快照）、`POST /{id}/void` 作废（逻辑删除：清单翻不到、底子留在库）、`GET` 条件分页（taskId/siteId/speciesCode/healthStatus/观测时刻区间随意拼，每行带观测编号） |
 | 异常个体上报 | `/api/reports` | `POST` 登记（编号 `AR-YYYY-NNNN` 自动生成，撞号重试不甩底层错；只有健康状态非正常的在册观测报得了，类别须与观测健康状态对口：伤报 INJURED、死报 DEAD、疑似疫病报 SUSPECT_DISEASE；严重程度系统算不用前端填：死亡/疑似疫病一律 HIGH，受伤的看观测保护级别快照，国家一级/二级算 HIGH、其余 MEDIUM）、`GET /{id}` 详情、`POST /{id}/advance` 处置推进（REPORTED→HANDLING→RESCUED/SAMPLED→CLOSED，只顺不逆、不跳级，结案为终态，推进记下处置时刻）、`POST /{id}/void` 作废（逻辑删除：名单翻不到、账留在库，作废后该观测可重报）、`GET` 条件分页（siteId/category/severity/status 随意拼，每行带上报编号） |
+| 采样送检 | `/api/samples` | `POST` 登记（编号 `SM-YYYY-NNNN` 自动生成，撞号重试不甩底层错；挂的上报得还没结案——还在上报或处置中的才采得了；样本类型 BLOOD/SWAB/TISSUE/FECES，新登记默认待检 PENDING）、`GET /{id}` 详情、`POST /{id}/result` 录检测结果（样本得还悬着才录得了，同一条样本别来回翻；结果一录，挂的上报从在办推到已采样 SAMPLED，两头一起动）、`GET` 条件分页（reportId/sampleType/result 随意拼，每行带样本编号） |
 
 约定：
 - 编号生成「取号→落库」一体化重试（`BizNoGenerator`）：并发撞号重新取号，唯一索引兜底，
@@ -217,6 +218,15 @@ PO↔领域↔VO 三层分离，DB 调用统一走仓储适配器的 `blocking(.
   处置时刻记在审计列 update_time（表按现状用，无 handled_at 列），VO 以 handledAt 回出。
 - 上报作废是逻辑删除（del_flag=1）：分页与详情不再翻到，账留在 t_abnormal_report 备查，
   作废占用的编号不复用（取号 SQL 不拼 del_flag）。
+- 采样登记守一道前置：挂的上报得在册、还没结案 —— 还在上报（REPORTED）或处置中（HANDLING）
+  的才采得了，已采样/已救护/已结案的一律采不了；登记本身不动上报状态（结果还悬着没出，
+  上报那头先别动）。一条上报可挂多条样本，一条样本一条记录。
+- 检测结果只录一回：样本得还悬着（PENDING）才录得了，结果值只认 POSITIVE/NEGATIVE/
+  INCONCLUSIVE；样本行按「仍待检」条件更新，并发录/重复录同一条样本只有一下翻得动。
+  结果一录，同一事务内把挂的上报从在办（REPORTED/HANDLING）条件更新推到已采样 SAMPLED，
+  两头一起动；上报已不在在办状态的不动它，结果照落样本行。
+- 样本编号 SM-YYYY-NNNN 撞号重试、唯一索引兜底：8 路并发登记同一上报，8 个号各不相同、
+  全部落库；6 路并发录同一条样本结果，只有 1 路成功，其余业务失败。
 - 已在真实 MySQL 上端到端验证：69 项空库全流程用例 + 13 项存量数据（any_16_fauna 种子库）用例全部通过，
   含 10 路并发建站、8 路并发建点的编号唯一性验证。
 
